@@ -1,0 +1,91 @@
+name: Release Obsidian plugin
+
+on:
+  workflow_dispatch:
+    inputs:
+      prerelease:
+        description: '是否为预发布版本'
+        required: true
+        default: false
+        type: boolean
+
+env:
+  PLUGIN_NAME: aliyun-oss-uploader
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Use Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: "18.x"
+          
+      - name: Build
+        id: build
+        run: |
+          npm install
+          npm run build
+          
+          # 检查 package.json 和 manifest.json 中的版本号是否匹配
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          MANIFEST_VERSION=$(node -p "require('./manifest.json').version")
+          if [ "$PKG_VERSION" != "$MANIFEST_VERSION" ]; then
+            echo "Error: Version mismatch between package.json ($PKG_VERSION) and manifest.json ($MANIFEST_VERSION)"
+            exit 1
+          fi
+          
+          # 设置版本号为环境变量
+          echo "VERSION=$PKG_VERSION" >> $GITHUB_ENV
+          
+          mkdir ${{ env.PLUGIN_NAME }}
+          cp main.js manifest.json ${{ env.PLUGIN_NAME }}
+          zip -r ${{ env.PLUGIN_NAME }}.zip ${{ env.PLUGIN_NAME }}
+          ls
+
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ env.VERSION }}
+          release_name: Version ${{ env.VERSION }}
+          draft: false
+          prerelease: ${{ inputs.prerelease }}
+
+      - name: Upload zip file
+        id: upload-zip
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./${{ env.PLUGIN_NAME }}.zip
+          asset_name: ${{ env.PLUGIN_NAME }}-${{ env.VERSION }}.zip
+          asset_content_type: application/zip
+
+      - name: Upload main.js
+        id: upload-main
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./main.js
+          asset_name: main.js
+          asset_content_type: text/javascript
+
+      - name: Upload manifest.json
+        id: upload-manifest
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./manifest.json
+          asset_name: manifest.json
+          asset_content_type: application/json 
