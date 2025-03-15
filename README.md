@@ -1,94 +1,83 @@
-# Obsidian Sample Plugin
+# Obsidian 阿里云 OSS 图片上传插件
 
-This is a sample plugin for Obsidian (https://obsidian.md).
+这是一个用于 [Obsidian](https://obsidian.md) 的插件，可以让你直接将图片上传到阿里云 OSS，并自动在笔记中插入图片链接。
 
-This project uses TypeScript to provide type checking and documentation.
-The repo depends on the latest plugin API (obsidian.d.ts) in TypeScript Definition format, which contains TSDoc comments describing what it does.
+## 功能特点
 
-This sample plugin demonstrates some of the basic functionality the plugin API can do.
-- Adds a ribbon icon, which shows a Notice when clicked.
-- Adds a command "Open Sample Modal" which opens a Modal.
-- Adds a plugin setting tab to the settings page.
-- Registers a global click event and output 'click' to the console.
-- Registers a global interval which logs 'setInterval' to the console.
+- 🖼️ 支持右键菜单上传本地图片到阿里云 OSS
+- 📋 支持拦截粘贴操作，直接上传剪贴板中的图片
+- 🖱️ 支持拦截拖拽操作，直接上传拖拽的图片
+- 🗜️ 支持图片压缩功能，可自定义压缩参数
+- 🔗 支持自定义域名
+- 📁 支持自定义存储路径
+- 🔄 支持上传失败自动重试
+- 🔒 安全的密钥存储
 
-## First time developing plugins?
+## 安装方法
 
-Quick starting guide for new plugin devs:
+1. 在 Obsidian 中打开设置
+2. 进入 "第三方插件" 设置页面
+3. 关闭 "安全模式"
+4. 点击 "浏览" 按钮，搜索 "Aliyun OSS Image Uploader"
+5. 点击 "安装" 按钮
+6. 启用插件
 
-- Check if [someone already developed a plugin for what you want](https://obsidian.md/plugins)! There might be an existing plugin similar enough that you can partner up with.
-- Make a copy of this repo as a template with the "Use this template" button (login to GitHub if you don't see it).
-- Clone your repo to a local development folder. For convenience, you can place this folder in your `.obsidian/plugins/your-plugin-name` folder.
-- Install NodeJS, then run `npm i` in the command line under your repo folder.
-- Run `npm run dev` to compile your plugin from `main.ts` to `main.js`.
-- Make changes to `main.ts` (or create new `.ts` files). Those changes should be automatically compiled into `main.js`.
-- Reload Obsidian to load the new version of your plugin.
-- Enable plugin in settings window.
-- For updates to the Obsidian API run `npm update` in the command line under your repo folder.
+## 配置说明
 
-## Releasing new releases
+在使用插件之前，你需要在阿里云 OSS 中进行以下准备工作：
 
-- Update your `manifest.json` with your new version number, such as `1.0.1`, and the minimum Obsidian version required for your latest release.
-- Update your `versions.json` file with `"new-plugin-version": "minimum-obsidian-version"` so older versions of Obsidian can download an older version of your plugin that's compatible.
-- Create new GitHub release using your new version number as the "Tag version". Use the exact version number, don't include a prefix `v`. See here for an example: https://github.com/obsidianmd/obsidian-sample-plugin/releases
-- Upload the files `manifest.json`, `main.js`, `styles.css` as binary attachments. Note: The manifest.json file must be in two places, first the root path of your repository and also in the release.
-- Publish the release.
+1. 创建 Bucket 并获取以下信息：
+   - Bucket 名称
+   - Region（地域）
+2. 创建 AccessKey，获取：
+   - Access Key ID
+   - Access Key Secret
 
-> You can simplify the version bump process by running `npm version patch`, `npm version minor` or `npm version major` after updating `minAppVersion` manually in `manifest.json`.
-> The command will bump version in `manifest.json` and `package.json`, and add the entry for the new version to `versions.json`
+然后在插件设置中填入以下信息：
 
-## Adding your plugin to the community plugin list
+- Access Key ID：阿里云账号的 Access Key ID
+- Access Key Secret：阿里云账号的 Access Key Secret
+- Bucket：OSS Bucket 名称
+- Region：OSS Region（地域），例如：oss-cn-hangzhou
+- 自定义域名（可选）：如果配置了 OSS 自定义域名，可以在此处输入
+- 存储路径：文件在 OSS 中的存储路径前缀，默认为 obsidian/
+- 启用压缩：是否启用图片压缩
+- 最大压缩尺寸：图片压缩的最大尺寸（像素）
+- 压缩后最大文件大小：压缩后的最大文件大小（MB）
+- 拦截粘贴和拖拽：启用后，粘贴或拖拽图片时将直接上传到阿里云 OSS
 
-- Check the [plugin guidelines](https://docs.obsidian.md/Plugins/Releasing/Plugin+guidelines).
-- Publish an initial version.
-- Make sure you have a `README.md` file in the root of your repo.
-- Make a pull request at https://github.com/obsidianmd/obsidian-releases to add your plugin.
+## 使用方法
 
-## How to use
+### 通过右键菜单上传
 
-- Clone this repo.
-- Make sure your NodeJS is at least v16 (`node --version`).
-- `npm i` or `yarn` to install dependencies.
-- `npm run dev` to start compilation in watch mode.
+1. 在 Obsidian 中右键点击本地图片文件
+2. 选择 "上传到阿里云 OSS" 选项
+3. 等待上传完成，插件会自动替换图片链接
 
-## Manually installing the plugin
+### 通过粘贴上传
 
-- Copy over `main.js`, `styles.css`, `manifest.json` to your vault `VaultFolder/.obsidian/plugins/your-plugin-id/`.
+1. 在插件设置中启用 "拦截粘贴和拖拽" 选项
+2. 复制任意图片到剪贴板
+3. 在 Obsidian 编辑器中粘贴
+4. 图片会自动上传到阿里云 OSS，并插入图片链接
 
-## Improve code quality with eslint (optional)
-- [ESLint](https://eslint.org/) is a tool that analyzes your code to quickly find problems. You can run ESLint against your plugin to find common bugs and ways to improve your code. 
-- To use eslint with this project, make sure to install eslint from terminal:
-  - `npm install -g eslint`
-- To use eslint to analyze this project use this command:
-  - `eslint main.ts`
-  - eslint will then create a report with suggestions for code improvement by file and line number.
-- If your source code is in a folder, such as `src`, you can use eslint with this command to analyze all files in that folder:
-  - `eslint .\src\`
+### 通过拖拽上传
 
-## Funding URL
+1. 在插件设置中启用 "拦截粘贴和拖拽" 选项
+2. 将图片文件拖拽到 Obsidian 编辑器中
+3. 图片会自动上传到阿里云 OSS，并插入图片链接
 
-You can include funding URLs where people who use your plugin can financially support it.
+## 注意事项
 
-The simple way is to set the `fundingUrl` field to your link in your `manifest.json` file:
+- 请妥善保管你的 Access Key，不要泄露给他人
+- 建议在阿里云 OSS 中设置合适的跨域规则
+- 如果使用自定义域名，请确保已正确配置 CNAME 记录
+- 建议定期检查 OSS 使用量，避免产生意外费用
 
-```json
-{
-    "fundingUrl": "https://buymeacoffee.com"
-}
-```
+## 问题反馈
 
-If you have multiple URLs, you can also do:
+如果你在使用过程中遇到任何问题，或有任何建议，欢迎在 GitHub 仓库中提出 Issue。
 
-```json
-{
-    "fundingUrl": {
-        "Buy Me a Coffee": "https://buymeacoffee.com",
-        "GitHub Sponsor": "https://github.com/sponsors",
-        "Patreon": "https://www.patreon.com/"
-    }
-}
-```
+## 许可证
 
-## API Documentation
-
-See https://github.com/obsidianmd/obsidian-api
+本项目使用 MIT 许可证。

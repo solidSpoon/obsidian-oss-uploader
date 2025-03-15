@@ -15,7 +15,7 @@
 		"oss",
 		"image"
 	],
-	"author": "",
+	"author": "solidSpoon",
 	"license": "MIT",
 	"dependencies": {
 		"browser-image-compression": "^2.0.2"
