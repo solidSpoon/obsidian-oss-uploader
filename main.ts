@@ -26,7 +26,7 @@ const DEFAULT_SETTINGS: AliyunOssSettings = {
 	enableCompression: true,
 	maxSizeMB: 0.3,
 	maxWidthOrHeight: 1280,
-	interceptPasteAndDrop: false
+	interceptPasteAndDrop: true
 }
 
 // 添加 OssService 类
@@ -101,14 +101,46 @@ class OssService {
 		return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
 	}
 
-	async uploadFile(fileContent: ArrayBuffer, fileName: string, progressCallback?: (progress: number) => void): Promise<string> {
-		this.validateSettings();
-
+	async uploadWithCompression(
+		fileContent: ArrayBuffer,
+		fileName: string,
+		options?: {
+			onProgress?: (progress: number) => void,
+			skipExistCheck?: boolean
+		}
+	): Promise<string> {
 		const fileExt = fileName.split('.').pop() || '';
-		const fileHash = await this.calculateHash(fileContent);
-		const ossPath = `${this.settings.path}${fileHash}.${fileExt}`;
-		const contentType = `image/${fileExt}`;
+		const originalHash = await this.calculateHash(fileContent);
+		const ossPath = `${this.settings.path}${originalHash}.${fileExt}`;
 
+		// 检查文件是否已存在（除非明确跳过）
+		if (!options?.skipExistCheck) {
+			const fileExists = await this.checkFileExists(ossPath);
+			if (fileExists) {
+				const baseUrl = this.settings.customDomain || `https://${this.settings.bucket}.${this.settings.region}.aliyuncs.com`;
+				return `${baseUrl}/${ossPath}`;
+			}
+		}
+
+		let finalContent: ArrayBuffer = fileContent;
+		
+		// 如果启用了压缩，且文件是图片类型
+		if (this.settings.enableCompression && /^(png|jpe?g|gif|webp|bmp)$/i.test(fileExt)) {
+			const blob = new Blob([fileContent], { type: `image/${fileExt}` });
+			const imageFile = new File([blob], fileName, { type: `image/${fileExt}` });
+			
+			const compressionOptions = {
+				maxSizeMB: this.settings.maxSizeMB,
+				maxWidthOrHeight: this.settings.maxWidthOrHeight,
+				useWebWorker: true,
+				onProgress: options?.onProgress
+			};
+			
+			const compressedBlob = await imageCompression(imageFile, compressionOptions);
+			finalContent = await compressedBlob.arrayBuffer();
+		}
+
+		const contentType = `image/${fileExt}`;
 		const { authorization, endpoint } = await this.generateSignature(ossPath, contentType);
 
 		await this.retryOperation(async () => {
@@ -120,7 +152,7 @@ class OssService {
 					'Date': new Date().toUTCString(),
 					'Content-Type': contentType,
 				},
-				body: fileContent,
+				body: finalContent,
 			});
 
 			if (response.status !== 200) {
@@ -130,6 +162,14 @@ class OssService {
 
 		const baseUrl = this.settings.customDomain || `https://${this.settings.bucket}.${this.settings.region}.aliyuncs.com`;
 		return `${baseUrl}/${ossPath}`;
+	}
+
+	async uploadFile(fileContent: ArrayBuffer, fileName: string, progressCallback?: (progress: number) => void): Promise<string> {
+		this.validateSettings();
+		return this.uploadWithCompression(fileContent, fileName, {
+			onProgress: progressCallback,
+			skipExistCheck: false
+		});
 	}
 
 	async checkFileExists(ossPath: string): Promise<boolean> {
@@ -238,60 +278,12 @@ export default class AliyunOssUploader extends Plugin {
 				throw new Error('无效的文件');
 			}
 
-			console.log('开始处理文件:', file.name);
 			const arrayBuffer = await this.app.vault.readBinary(file);
-			
-			// 先计算原始文件的哈希值
-			const fileHash = await this.ossService.calculateHash(arrayBuffer);
-			const fileExt = file.extension;
-			const ossPath = `${this.settings.path}${fileHash}.${fileExt}`;
-			
-			let fileContent: ArrayBuffer;
-			
-			if (this.settings.enableCompression) {
-				progressNotice.setMessage('正在压缩图片...');
-				const blob = new Blob([arrayBuffer], { type: `image/${file.extension}` });
-				const imageFile = new File([blob], file.name, { type: `image/${file.extension}` });
-				
-				const options = {
-					maxSizeMB: this.settings.maxSizeMB,
-					maxWidthOrHeight: this.settings.maxWidthOrHeight,
-					useWebWorker: true,
-					onProgress: (progress: number) => {
-						progressNotice.setMessage(`压缩进度: ${Math.round(progress)}%`);
-					}
-				};
-				
-				const compressedBlob = await imageCompression(imageFile, options);
-				fileContent = await compressedBlob.arrayBuffer();
-				console.log('压缩完成，压缩后大小:', compressedBlob.size, '字节');
-			} else {
-				fileContent = arrayBuffer;
-			}
-
-			progressNotice.setMessage('正在上传...');
-			const contentType = `image/${fileExt}`;
-			const { authorization, endpoint } = await this.ossService.generateSignature(ossPath, contentType);
-
-			await this.ossService.retryOperation(async () => {
-				const response = await requestUrl({
-					url: endpoint,
-					method: 'PUT',
-					headers: {
-						'Authorization': authorization,
-						'Date': new Date().toUTCString(),
-						'Content-Type': contentType,
-					},
-					body: fileContent,
-				});
-
-				if (response.status !== 200) {
-					throw new Error(`上传失败: HTTP ${response.status}`);
+			const imageUrl = await this.ossService.uploadWithCompression(arrayBuffer, file.name, {
+				onProgress: (progress: number) => {
+					progressNotice.setMessage(`处理进度: ${Math.round(progress)}%`);
 				}
 			});
-
-			const baseUrl = this.settings.customDomain || `https://${this.settings.bucket}.${this.settings.region}.aliyuncs.com`;
-			const imageUrl = `${baseUrl}/${ossPath}`;
 			
 			await this.updateMarkdown(file.name, imageUrl);
 			progressNotice.hide();
@@ -355,76 +347,13 @@ export default class AliyunOssUploader extends Plugin {
 		try {
 			const progressNotice = new Notice('准备上传...', 0);
 			
-			// 先获取原始文件内容并计算哈希值
 			const originalContent = await blob.arrayBuffer();
-			const fileHash = await this.ossService.calculateHash(originalContent);
-			const fileExt = blob.name.split('.').pop() || '';
-			const ossPath = `${this.settings.path}${fileHash}.${fileExt}`;
-
-			// 检查文件是否已存在
-			const fileExists = await this.ossService.checkFileExists(ossPath);
-			if (fileExists) {
-				// 如果文件已存在，直接使用现有的 URL
-				const baseUrl = this.settings.customDomain || `https://${this.settings.bucket}.${this.settings.region}.aliyuncs.com`;
-				const imageUrl = `${baseUrl}/${ossPath}`;
-
-				// 获取当前编辑器并插入链接
-				const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
-				if (activeView) {
-					const editor = activeView.editor;
-					const cursor = editor.getCursor();
-					const baseFileName = blob.name.replace(/\.[^/.]+$/, "");
-					editor.replaceRange(`![${baseFileName}](${imageUrl})\n`, cursor);
-				}
-
-				progressNotice.hide();
-				new Notice('文件已存在，已插入链接！');
-				return;
-			}
-			
-			let fileContent: ArrayBuffer;
-			if (this.settings.enableCompression) {
-				progressNotice.setMessage('正在压缩图片...');
-				const options = {
-					maxSizeMB: this.settings.maxSizeMB,
-					maxWidthOrHeight: this.settings.maxWidthOrHeight,
-					useWebWorker: true,
-					onProgress: (progress: number) => {
-						progressNotice.setMessage(`压缩进度: ${Math.round(progress)}%`);
-					}
-				};
-				
-				const compressedBlob = await imageCompression(blob, options);
-				fileContent = await compressedBlob.arrayBuffer();
-			} else {
-				fileContent = originalContent;
-			}
-
-			progressNotice.setMessage('正在上传...');
-			const contentType = `image/${fileExt}`;
-			const { authorization, endpoint } = await this.ossService.generateSignature(ossPath, contentType);
-
-			await this.ossService.retryOperation(async () => {
-				const response = await requestUrl({
-					url: endpoint,
-					method: 'PUT',
-					headers: {
-						'Authorization': authorization,
-						'Date': new Date().toUTCString(),
-						'Content-Type': contentType,
-					},
-					body: fileContent,
-				});
-
-				if (response.status !== 200) {
-					throw new Error(`上传失败: HTTP ${response.status}`);
+			const imageUrl = await this.ossService.uploadWithCompression(originalContent, blob.name, {
+				onProgress: (progress: number) => {
+					progressNotice.setMessage(`处理进度: ${Math.round(progress)}%`);
 				}
 			});
 
-			const baseUrl = this.settings.customDomain || `https://${this.settings.bucket}.${this.settings.region}.aliyuncs.com`;
-			const imageUrl = `${baseUrl}/${ossPath}`;
-
-			// 获取当前编辑器
 			const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
 			if (activeView) {
 				const editor = activeView.editor;
