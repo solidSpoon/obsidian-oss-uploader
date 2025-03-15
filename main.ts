@@ -51,7 +51,7 @@ class OssService {
 		}
 	}
 
-	private async retryOperation<T>(operation: () => Promise<T>, retryCount = 0): Promise<T> {
+	async retryOperation<T>(operation: () => Promise<T>, retryCount = 0): Promise<T> {
 		try {
 			return await operation();
 		} catch (error) {
@@ -62,6 +62,41 @@ class OssService {
 			}
 			throw error;
 		}
+	}
+
+	async generateSignature(ossPath: string, contentType: string): Promise<{ authorization: string; endpoint: string }> {
+		const date = new Date().toUTCString();
+		const ossResource = `/${this.settings.bucket}/${ossPath}`;
+		const stringToSign = `PUT\n\n${contentType}\n${date}\n${ossResource}`;
+		
+		const signature = await this.calculateSignature(stringToSign, this.settings.accessKeySecret);
+		const authorization = `OSS ${this.settings.accessKeyId}:${signature}`;
+		const endpoint = `https://${this.settings.bucket}.${this.settings.region}.aliyuncs.com/${ossPath}`;
+
+		return { authorization, endpoint };
+	}
+
+	private async calculateSignature(stringToSign: string, accessKeySecret: string): Promise<string> {
+		const encoder = new TextEncoder();
+		const key = await crypto.subtle.importKey(
+			'raw',
+			encoder.encode(accessKeySecret),
+			{ name: 'HMAC', hash: 'SHA-1' },
+			false,
+			['sign']
+		);
+		const signature = await crypto.subtle.sign(
+			'HMAC',
+			key,
+			encoder.encode(stringToSign)
+		);
+		return btoa(String.fromCharCode(...new Uint8Array(signature)));
+	}
+
+	async calculateHash(data: ArrayBuffer): Promise<string> {
+		const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+		const hashArray = Array.from(new Uint8Array(hashBuffer));
+		return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
 	}
 
 	async uploadFile(fileContent: ArrayBuffer, fileName: string, progressCallback?: (progress: number) => void): Promise<string> {
@@ -93,41 +128,6 @@ class OssService {
 
 		const baseUrl = this.settings.customDomain || `https://${this.settings.bucket}.${this.settings.region}.aliyuncs.com`;
 		return `${baseUrl}/${ossPath}`;
-	}
-
-	private async generateSignature(ossPath: string, contentType: string): Promise<{ authorization: string; endpoint: string }> {
-		const date = new Date().toUTCString();
-		const ossResource = `/${this.settings.bucket}/${ossPath}`;
-		const stringToSign = `PUT\n\n${contentType}\n${date}\n${ossResource}`;
-		
-		const signature = await this.calculateSignature(stringToSign, this.settings.accessKeySecret);
-		const authorization = `OSS ${this.settings.accessKeyId}:${signature}`;
-		const endpoint = `https://${this.settings.bucket}.${this.settings.region}.aliyuncs.com/${ossPath}`;
-
-		return { authorization, endpoint };
-	}
-
-	private async calculateSignature(stringToSign: string, accessKeySecret: string): Promise<string> {
-		const encoder = new TextEncoder();
-		const key = await crypto.subtle.importKey(
-			'raw',
-			encoder.encode(accessKeySecret),
-			{ name: 'HMAC', hash: 'SHA-1' },
-			false,
-			['sign']
-		);
-		const signature = await crypto.subtle.sign(
-			'HMAC',
-			key,
-			encoder.encode(stringToSign)
-		);
-		return btoa(String.fromCharCode(...new Uint8Array(signature)));
-	}
-
-	private async calculateHash(data: ArrayBuffer): Promise<string> {
-		const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-		const hashArray = Array.from(new Uint8Array(hashBuffer));
-		return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
 	}
 }
 
@@ -170,6 +170,11 @@ export default class AliyunOssUploader extends Plugin {
 			console.log('开始处理文件:', file.name);
 			const arrayBuffer = await this.app.vault.readBinary(file);
 			
+			// 先计算原始文件的哈希值
+			const fileHash = await this.ossService.calculateHash(arrayBuffer);
+			const fileExt = file.extension;
+			const ossPath = `${this.settings.path}${fileHash}.${fileExt}`;
+			
 			let fileContent: ArrayBuffer;
 			
 			if (this.settings.enableCompression) {
@@ -194,7 +199,28 @@ export default class AliyunOssUploader extends Plugin {
 			}
 
 			progressNotice.setMessage('正在上传...');
-			const imageUrl = await this.ossService.uploadFile(fileContent, file.name);
+			const contentType = `image/${fileExt}`;
+			const { authorization, endpoint } = await this.ossService.generateSignature(ossPath, contentType);
+
+			await this.ossService.retryOperation(async () => {
+				const response = await requestUrl({
+					url: endpoint,
+					method: 'PUT',
+					headers: {
+						'Authorization': authorization,
+						'Date': new Date().toUTCString(),
+						'Content-Type': contentType,
+					},
+					body: fileContent,
+				});
+
+				if (response.status !== 200) {
+					throw new Error(`上传失败: HTTP ${response.status}`);
+				}
+			});
+
+			const baseUrl = this.settings.customDomain || `https://${this.settings.bucket}.${this.settings.region}.aliyuncs.com`;
+			const imageUrl = `${baseUrl}/${ossPath}`;
 			
 			await this.updateMarkdown(file.name, imageUrl);
 			progressNotice.hide();
