@@ -13,6 +13,7 @@ interface AliyunOssSettings {
 	enableCompression: boolean;
 	maxSizeMB: number;
 	maxWidthOrHeight: number;
+	interceptPasteAndDrop: boolean;
 }
 
 const DEFAULT_SETTINGS: AliyunOssSettings = {
@@ -24,7 +25,8 @@ const DEFAULT_SETTINGS: AliyunOssSettings = {
 	path: 'obsidian/',
 	enableCompression: true,
 	maxSizeMB: 0.3,
-	maxWidthOrHeight: 1280
+	maxWidthOrHeight: 1280,
+	interceptPasteAndDrop: false
 }
 
 // 添加 OssService 类
@@ -155,6 +157,48 @@ export default class AliyunOssUploader extends Plugin {
 			})
 		);
 
+		// 拦截粘贴事件
+		this.registerEvent(
+			this.app.workspace.on('editor-paste', async (evt: ClipboardEvent, editor: Editor) => {
+				if (!this.settings.interceptPasteAndDrop) return;
+
+				const items = evt.clipboardData?.items;
+				if (!items) return;
+
+				for (const item of Array.from(items)) {
+					if (item.type.startsWith('image/')) {
+						evt.preventDefault();
+						const blob = item.getAsFile();
+						if (blob) {
+							await this.handleImageUpload(blob);
+						}
+						break;
+					}
+				}
+			})
+		);
+
+		// 拦截拖拽事件
+		this.registerEvent(
+			this.app.workspace.on('editor-drop', async (evt: DragEvent, editor: Editor) => {
+				if (!this.settings.interceptPasteAndDrop) return;
+
+				const items = evt.dataTransfer?.items;
+				if (!items) return;
+
+				for (const item of Array.from(items)) {
+					if (item.type.startsWith('image/')) {
+						evt.preventDefault();
+						const blob = item.getAsFile();
+						if (blob) {
+							await this.handleImageUpload(blob);
+						}
+						break;
+					}
+				}
+			})
+		);
+
 		// 添加设置选项卡
 		this.addSettingTab(new AliyunOssSettingTab(this.app, this));
 	}
@@ -278,6 +322,47 @@ export default class AliyunOssUploader extends Plugin {
 	async saveSettings() {
 		await this.saveData(this.settings);
 	}
+
+	private async handleImageUpload(blob: File) {
+		try {
+			const progressNotice = new Notice('准备上传...', 0);
+			let fileContent: ArrayBuffer;
+
+			if (this.settings.enableCompression) {
+				progressNotice.setMessage('正在压缩图片...');
+				const options = {
+					maxSizeMB: this.settings.maxSizeMB,
+					maxWidthOrHeight: this.settings.maxWidthOrHeight,
+					useWebWorker: true,
+					onProgress: (progress: number) => {
+						progressNotice.setMessage(`压缩进度: ${Math.round(progress)}%`);
+					}
+				};
+				
+				const compressedBlob = await imageCompression(blob, options);
+				fileContent = await compressedBlob.arrayBuffer();
+			} else {
+				fileContent = await blob.arrayBuffer();
+			}
+
+			progressNotice.setMessage('正在上传...');
+			const imageUrl = await this.ossService.uploadFile(fileContent, blob.name);
+
+			// 获取当前编辑器
+			const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
+			if (activeView) {
+				const editor = activeView.editor;
+				const cursor = editor.getCursor();
+				editor.replaceRange(`![](${imageUrl})`, cursor);
+			}
+
+			progressNotice.hide();
+			new Notice('上传成功！');
+		} catch (error) {
+			console.error('上传失败:', error);
+			new Notice(`上传失败: ${error instanceof Error ? error.message : '未知错误'}`);
+		}
+	}
 }
 
 class AliyunOssSettingTab extends PluginSettingTab {
@@ -389,6 +474,16 @@ class AliyunOssSettingTab extends PluginSettingTab {
 				.setValue(this.plugin.settings.maxSizeMB.toString())
 				.onChange(async (value) => {
 					this.plugin.settings.maxSizeMB = parseFloat(value);
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName('拦截粘贴和拖拽')
+			.setDesc('启用后，粘贴或拖拽图片时将直接上传到阿里云 OSS，而不是保存到本地')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.interceptPasteAndDrop)
+				.onChange(async (value) => {
+					this.plugin.settings.interceptPasteAndDrop = value;
 					await this.plugin.saveSettings();
 				}));
 	}
