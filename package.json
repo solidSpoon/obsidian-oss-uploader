@@ -1,16 +1,23 @@
 {
-	"name": "obsidian-sample-plugin",
+	"name": "obsidian-aliyun-oss-uploader",
 	"version": "1.0.0",
-	"description": "This is a sample plugin for Obsidian (https://obsidian.md)",
+	"description": "An Obsidian plugin for uploading images to Aliyun OSS",
 	"main": "main.js",
 	"scripts": {
 		"dev": "node esbuild.config.mjs",
 		"build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
 		"version": "node version-bump.mjs && git add manifest.json versions.json"
 	},
-	"keywords": [],
+	"keywords": [
+		"obsidian",
+		"plugin",
+		"aliyun",
+		"oss",
+		"image"
+	],
 	"author": "",
 	"license": "MIT",
+	"dependencies": {},
 	"devDependencies": {
 		"@types/node": "^16.11.6",
 		"@typescript-eslint/eslint-plugin": "5.29.0",
