@@ -27,11 +27,117 @@ const DEFAULT_SETTINGS: AliyunOssSettings = {
 	maxWidthOrHeight: 1280
 }
 
+// 添加 OssService 类
+class OssService {
+	private settings: AliyunOssSettings;
+	private maxRetries = 3;
+
+	constructor(settings: AliyunOssSettings) {
+		this.settings = settings;
+	}
+
+	private validateSettings(): void {
+		if (!this.settings.accessKeyId) {
+			throw new Error('缺少 Access Key ID');
+		}
+		if (!this.settings.accessKeySecret) {
+			throw new Error('缺少 Access Key Secret');
+		}
+		if (!this.settings.bucket) {
+			throw new Error('缺少 Bucket');
+		}
+		if (!this.settings.region) {
+			throw new Error('缺少 Region');
+		}
+	}
+
+	private async retryOperation<T>(operation: () => Promise<T>, retryCount = 0): Promise<T> {
+		try {
+			return await operation();
+		} catch (error) {
+			if (retryCount < this.maxRetries) {
+				const delay = Math.pow(2, retryCount) * 1000; // 指数退避
+				await new Promise(resolve => setTimeout(resolve, delay));
+				return this.retryOperation(operation, retryCount + 1);
+			}
+			throw error;
+		}
+	}
+
+	async uploadFile(fileContent: ArrayBuffer, fileName: string, progressCallback?: (progress: number) => void): Promise<string> {
+		this.validateSettings();
+
+		const fileExt = fileName.split('.').pop() || '';
+		const fileHash = await this.calculateHash(fileContent);
+		const ossPath = `${this.settings.path}${fileHash}.${fileExt}`;
+		const contentType = `image/${fileExt}`;
+
+		const { authorization, endpoint } = await this.generateSignature(ossPath, contentType);
+
+		await this.retryOperation(async () => {
+			const response = await requestUrl({
+				url: endpoint,
+				method: 'PUT',
+				headers: {
+					'Authorization': authorization,
+					'Date': new Date().toUTCString(),
+					'Content-Type': contentType,
+				},
+				body: fileContent,
+			});
+
+			if (response.status !== 200) {
+				throw new Error(`上传失败: HTTP ${response.status}`);
+			}
+		});
+
+		const baseUrl = this.settings.customDomain || `https://${this.settings.bucket}.${this.settings.region}.aliyuncs.com`;
+		return `${baseUrl}/${ossPath}`;
+	}
+
+	private async generateSignature(ossPath: string, contentType: string): Promise<{ authorization: string; endpoint: string }> {
+		const date = new Date().toUTCString();
+		const ossResource = `/${this.settings.bucket}/${ossPath}`;
+		const stringToSign = `PUT\n\n${contentType}\n${date}\n${ossResource}`;
+		
+		const signature = await this.calculateSignature(stringToSign, this.settings.accessKeySecret);
+		const authorization = `OSS ${this.settings.accessKeyId}:${signature}`;
+		const endpoint = `https://${this.settings.bucket}.${this.settings.region}.aliyuncs.com/${ossPath}`;
+
+		return { authorization, endpoint };
+	}
+
+	private async calculateSignature(stringToSign: string, accessKeySecret: string): Promise<string> {
+		const encoder = new TextEncoder();
+		const key = await crypto.subtle.importKey(
+			'raw',
+			encoder.encode(accessKeySecret),
+			{ name: 'HMAC', hash: 'SHA-1' },
+			false,
+			['sign']
+		);
+		const signature = await crypto.subtle.sign(
+			'HMAC',
+			key,
+			encoder.encode(stringToSign)
+		);
+		return btoa(String.fromCharCode(...new Uint8Array(signature)));
+	}
+
+	private async calculateHash(data: ArrayBuffer): Promise<string> {
+		const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+		const hashArray = Array.from(new Uint8Array(hashBuffer));
+		return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+	}
+}
+
 export default class AliyunOssUploader extends Plugin {
 	settings: AliyunOssSettings;
+	private ossService: OssService;
 
 	async onload() {
 		await this.loadSettings();
+		this.ossService = new OssService(this.settings);
 
 		// 添加右键菜单
 		this.registerEvent(
@@ -55,9 +161,10 @@ export default class AliyunOssUploader extends Plugin {
 
 	async uploadImage(file: TFile) {
 		try {
-			if (!this.settings.accessKeyId || !this.settings.accessKeySecret || !this.settings.bucket || !this.settings.region) {
-				new Notice('请先配置阿里云 OSS 信息');
-				return;
+			const progressNotice = new Notice('准备上传...', 0);
+			
+			if (!file || !(file instanceof TFile)) {
+				throw new Error('无效的文件');
 			}
 
 			console.log('开始处理文件:', file.name);
@@ -66,124 +173,60 @@ export default class AliyunOssUploader extends Plugin {
 			let fileContent: ArrayBuffer;
 			
 			if (this.settings.enableCompression) {
-				// 将 ArrayBuffer 转换为 Blob
+				progressNotice.setMessage('正在压缩图片...');
 				const blob = new Blob([arrayBuffer], { type: `image/${file.extension}` });
-				
-				// 将 Blob 转换为 File 对象
 				const imageFile = new File([blob], file.name, { type: `image/${file.extension}` });
 				
-				// 压缩选项
 				const options = {
 					maxSizeMB: this.settings.maxSizeMB,
 					maxWidthOrHeight: this.settings.maxWidthOrHeight,
-					useWebWorker: true
+					useWebWorker: true,
+					onProgress: (progress: number) => {
+						progressNotice.setMessage(`压缩进度: ${Math.round(progress)}%`);
+					}
 				};
 				
-				// 压缩图片
-				console.log('开始压缩图片...');
 				const compressedBlob = await imageCompression(imageFile, options);
-				console.log('压缩完成，压缩后大小:', compressedBlob.size, '字节');
-				
-				// 将压缩后的 Blob 转换回 ArrayBuffer
 				fileContent = await compressedBlob.arrayBuffer();
+				console.log('压缩完成，压缩后大小:', compressedBlob.size, '字节');
 			} else {
 				fileContent = arrayBuffer;
-				console.log('跳过压缩，原始文件大小:', fileContent.byteLength, '字节');
 			}
+
+			progressNotice.setMessage('正在上传...');
+			const imageUrl = await this.ossService.uploadFile(fileContent, file.name);
 			
-			const fileName = file.name;
-			const fileHash = await this.calculateHash(fileContent);
-			const fileExt = fileName.split('.').pop();
-			const ossPath = `${this.settings.path}${fileHash}.${fileExt}`;
-			console.log('准备上传到路径:', ossPath);
-
-			// 构建 OSS 签名
-			const date = new Date().toUTCString();
-			const contentType = `image/${fileExt}`;
-			const ossResource = `/${this.settings.bucket}/${ossPath}`;
-			const stringToSign = `PUT\n\n${contentType}\n${date}\n${ossResource}`;
+			await this.updateMarkdown(file.name, imageUrl);
+			progressNotice.hide();
+			new Notice('上传成功！');
 			
-			// 使用 CryptoJS 计算签名
-			const signature = await this.calculateSignature(stringToSign, this.settings.accessKeySecret);
-			
-			const authorization = `OSS ${this.settings.accessKeyId}:${signature}`;
-			const endpoint = `https://${this.settings.bucket}.${this.settings.region}.aliyuncs.com/${ossPath}`;
-
-			// 使用 Obsidian requestUrl 进行上传
-			const response = await requestUrl({
-				url: endpoint,
-				method: 'PUT',
-				headers: {
-					'Authorization': authorization,
-					'Date': date,
-					'Content-Type': contentType,
-				},
-				body: fileContent,
-			});
-
-			if (response.status === 200) {
-				const baseUrl = this.settings.customDomain || `https://${this.settings.bucket}.${this.settings.region}.aliyuncs.com`;
-				const imageUrl = `${baseUrl}/${ossPath}`;
-
-				// 获取当前打开的 markdown 文件
-				const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
-				if (activeView) {
-					const editor = activeView.editor;
-					const content = editor.getValue();
-					// 更新正则表达式以更准确地匹配图片链接，包括 ![[]] 格式
-					const filePath = file.path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-					const imgRegex = new RegExp(`!\\[\\[${filePath}\\]\\]|!\\[([^\\]]*)\\]\\(${filePath}\\)`, 'g');
-					
-					// 提取原始文件名（不含扩展名）
-					const baseFileName = fileName.replace(/\.[^/.]+$/, "");
-					const newContent = content.replace(imgRegex, `![${baseFileName}](${imageUrl})`);
-					
-					if (content !== newContent) {
-						editor.setValue(newContent);
-						new Notice('图片上传成功并更新了链接！');
-					} else {
-						// 如果没有找到匹配的链接，尝试在光标位置插入新的图片链接
-						const cursor = editor.getCursor();
-						editor.replaceRange(`![${baseFileName}](${imageUrl})\n`, cursor);
-						new Notice('图片上传成功并插入了新链接！');
-					}
-				} else {
-					new Notice('图片上传成功！URL 已复制到剪贴板');
-					await navigator.clipboard.writeText(imageUrl);
-				}
-			} else {
-				throw new Error(`上传失败: ${response.status}`);
-			}
 		} catch (error) {
 			console.error('上传失败:', error);
-			new Notice('上传失败: ' + (error as Error).message);
+			new Notice(`上传失败: ${error instanceof Error ? error.message : '未知错误'}`);
 		}
 	}
 
-	// 计算 OSS 签名
-	private async calculateSignature(stringToSign: string, accessKeySecret: string): Promise<string> {
-		const encoder = new TextEncoder();
-		const key = await crypto.subtle.importKey(
-			'raw',
-			encoder.encode(accessKeySecret),
-			{ name: 'HMAC', hash: 'SHA-1' },
-			false,
-			['sign']
-		);
-		const signature = await crypto.subtle.sign(
-			'HMAC',
-			key,
-			encoder.encode(stringToSign)
-		);
-		return btoa(String.fromCharCode(...new Uint8Array(signature)));
-	}
+	private async updateMarkdown(fileName: string, imageUrl: string) {
+		const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
+		if (!activeView) {
+			await navigator.clipboard.writeText(imageUrl);
+			return;
+		}
 
-	// 使用 Web Crypto API 计算文件哈希
-	private async calculateHash(data: ArrayBuffer): Promise<string> {
-		const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-		const hashArray = Array.from(new Uint8Array(hashBuffer));
-		const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-		return hashHex;
+		const editor = activeView.editor;
+		const content = editor.getValue();
+		const baseFileName = fileName.replace(/\.[^/.]+$/, "");
+		const filePath = fileName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+		const imgRegex = new RegExp(`!\\[\\[${filePath}\\]\\]|!\\[([^\\]]*)\\]\\(${filePath}\\)`, 'g');
+		
+		const newContent = content.replace(imgRegex, `![${baseFileName}](${imageUrl})`);
+		
+		if (content !== newContent) {
+			editor.setValue(newContent);
+		} else {
+			const cursor = editor.getCursor();
+			editor.replaceRange(`![${baseFileName}](${imageUrl})\n`, cursor);
+		}
 	}
 
 	async loadSettings() {
