@@ -17,7 +17,9 @@
 	],
 	"author": "",
 	"license": "MIT",
-	"dependencies": {},
+	"dependencies": {
+		"browser-image-compression": "^2.0.2"
+	},
 	"devDependencies": {
 		"@types/node": "^16.11.6",
 		"@typescript-eslint/eslint-plugin": "5.29.0",

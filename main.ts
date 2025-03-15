@@ -1,4 +1,5 @@
 import { App, Editor, MarkdownView, Notice, Plugin, PluginSettingTab, Setting, Menu, TFile, MenuItem, requestUrl } from 'obsidian';
+import imageCompression from 'browser-image-compression';
 
 // Remember to rename these classes and interfaces!
 
@@ -9,6 +10,9 @@ interface AliyunOssSettings {
 	region: string;
 	customDomain: string;
 	path: string;
+	enableCompression: boolean;
+	maxSizeMB: number;
+	maxWidthOrHeight: number;
 }
 
 const DEFAULT_SETTINGS: AliyunOssSettings = {
@@ -17,7 +21,10 @@ const DEFAULT_SETTINGS: AliyunOssSettings = {
 	bucket: '',
 	region: '',
 	customDomain: '',
-	path: 'obsidian/'
+	path: 'obsidian/',
+	enableCompression: true,
+	maxSizeMB: 0.3,
+	maxWidthOrHeight: 1280
 }
 
 export default class AliyunOssUploader extends Plugin {
@@ -55,11 +62,37 @@ export default class AliyunOssUploader extends Plugin {
 
 			console.log('开始处理文件:', file.name);
 			const arrayBuffer = await this.app.vault.readBinary(file);
-			const fileContent = arrayBuffer;
-			console.log('文件内容读取成功，大小:', fileContent.byteLength, '字节');
-
+			
+			let fileContent: ArrayBuffer;
+			
+			if (this.settings.enableCompression) {
+				// 将 ArrayBuffer 转换为 Blob
+				const blob = new Blob([arrayBuffer], { type: `image/${file.extension}` });
+				
+				// 将 Blob 转换为 File 对象
+				const imageFile = new File([blob], file.name, { type: `image/${file.extension}` });
+				
+				// 压缩选项
+				const options = {
+					maxSizeMB: this.settings.maxSizeMB,
+					maxWidthOrHeight: this.settings.maxWidthOrHeight,
+					useWebWorker: true
+				};
+				
+				// 压缩图片
+				console.log('开始压缩图片...');
+				const compressedBlob = await imageCompression(imageFile, options);
+				console.log('压缩完成，压缩后大小:', compressedBlob.size, '字节');
+				
+				// 将压缩后的 Blob 转换回 ArrayBuffer
+				fileContent = await compressedBlob.arrayBuffer();
+			} else {
+				fileContent = arrayBuffer;
+				console.log('跳过压缩，原始文件大小:', fileContent.byteLength, '字节');
+			}
+			
 			const fileName = file.name;
-			const fileHash = await this.calculateHash(arrayBuffer);
+			const fileHash = await this.calculateHash(fileContent);
 			const fileExt = fileName.split('.').pop();
 			const ossPath = `${this.settings.path}${fileHash}.${fileExt}`;
 			console.log('准备上传到路径:', ossPath);
@@ -239,6 +272,38 @@ class AliyunOssSettingTab extends PluginSettingTab {
 				.setValue(this.plugin.settings.path)
 				.onChange(async (value) => {
 					this.plugin.settings.path = value;
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName('启用压缩')
+			.setDesc('是否启用图片压缩')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.enableCompression)
+				.onChange(async (value) => {
+					this.plugin.settings.enableCompression = value;
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName('最大压缩尺寸')
+			.setDesc('图片压缩的最大尺寸（像素）')
+			.addText(text => text
+				.setPlaceholder('例如：1920')
+				.setValue(this.plugin.settings.maxWidthOrHeight.toString())
+				.onChange(async (value) => {
+					this.plugin.settings.maxWidthOrHeight = parseInt(value);
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName('压缩后最大文件大小')
+			.setDesc('压缩后的最大文件大小（MB）')
+			.addText(text => text
+				.setPlaceholder('例如：1')
+				.setValue(this.plugin.settings.maxSizeMB.toString())
+				.onChange(async (value) => {
+					this.plugin.settings.maxSizeMB = parseFloat(value);
 					await this.plugin.saveSettings();
 				}));
 	}
