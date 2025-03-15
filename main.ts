@@ -214,16 +214,32 @@ export default class AliyunOssUploader extends Plugin {
 		}
 
 		const editor = activeView.editor;
-		const content = editor.getValue();
+		const file = activeView.file;
 		const baseFileName = fileName.replace(/\.[^/.]+$/, "");
-		const filePath = fileName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-		const imgRegex = new RegExp(`!\\[\\[${filePath}\\]\\]|!\\[([^\\]]*)\\]\\(${filePath}\\)`, 'g');
-		
-		const newContent = content.replace(imgRegex, `![${baseFileName}](${imageUrl})`);
-		
-		if (content !== newContent) {
-			editor.setValue(newContent);
-		} else {
+
+		// 使用 MetadataCache 获取所有嵌入图片的位置
+		const cache = this.app.metadataCache.getFileCache(file);
+		let replaced = false;
+
+		if (cache?.embeds) {
+			// 从后向前替换，以避免位置偏移问题
+			for (let i = cache.embeds.length - 1; i >= 0; i--) {
+				const embed = cache.embeds[i];
+				if (embed.link === fileName) {
+					const from = editor.offsetToPos(embed.position.start.offset);
+					const to = editor.offsetToPos(embed.position.end.offset);
+					editor.replaceRange(
+						`![${baseFileName}](${imageUrl})`,
+						from,
+						to
+					);
+					replaced = true;
+				}
+			}
+		}
+
+		// 如果没有找到匹配的图片链接，则在光标位置插入新的链接
+		if (!replaced) {
 			const cursor = editor.getCursor();
 			editor.replaceRange(`![${baseFileName}](${imageUrl})\n`, cursor);
 		}
