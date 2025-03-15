@@ -131,6 +131,33 @@ class OssService {
 		const baseUrl = this.settings.customDomain || `https://${this.settings.bucket}.${this.settings.region}.aliyuncs.com`;
 		return `${baseUrl}/${ossPath}`;
 	}
+
+	async checkFileExists(ossPath: string): Promise<boolean> {
+		try {
+			const endpoint = `https://${this.settings.bucket}.${this.settings.region}.aliyuncs.com/${ossPath}`;
+			const date = new Date().toUTCString();
+			const stringToSign = `HEAD\n\n\n${date}\n/${this.settings.bucket}/${ossPath}`;
+			const signature = await this.calculateSignature(stringToSign, this.settings.accessKeySecret);
+			const authorization = `OSS ${this.settings.accessKeyId}:${signature}`;
+
+			const response = await requestUrl({
+				url: endpoint,
+				method: 'HEAD',
+				headers: {
+					'Authorization': authorization,
+					'Date': date,
+				},
+			});
+
+			return response.status === 200;
+		} catch (error) {
+			// 如果文件不存在，会返回 404
+			if (error instanceof Error && error.message.includes('404')) {
+				return false;
+			}
+			throw error;
+		}
+	}
 }
 
 export default class AliyunOssUploader extends Plugin {
@@ -327,8 +354,35 @@ export default class AliyunOssUploader extends Plugin {
 	private async handleImageUpload(blob: File) {
 		try {
 			const progressNotice = new Notice('准备上传...', 0);
-			let fileContent: ArrayBuffer;
+			
+			// 先获取原始文件内容并计算哈希值
+			const originalContent = await blob.arrayBuffer();
+			const fileHash = await this.ossService.calculateHash(originalContent);
+			const fileExt = blob.name.split('.').pop() || '';
+			const ossPath = `${this.settings.path}${fileHash}.${fileExt}`;
 
+			// 检查文件是否已存在
+			const fileExists = await this.ossService.checkFileExists(ossPath);
+			if (fileExists) {
+				// 如果文件已存在，直接使用现有的 URL
+				const baseUrl = this.settings.customDomain || `https://${this.settings.bucket}.${this.settings.region}.aliyuncs.com`;
+				const imageUrl = `${baseUrl}/${ossPath}`;
+
+				// 获取当前编辑器并插入链接
+				const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
+				if (activeView) {
+					const editor = activeView.editor;
+					const cursor = editor.getCursor();
+					const baseFileName = blob.name.replace(/\.[^/.]+$/, "");
+					editor.replaceRange(`![${baseFileName}](${imageUrl})\n`, cursor);
+				}
+
+				progressNotice.hide();
+				new Notice('文件已存在，已插入链接！');
+				return;
+			}
+			
+			let fileContent: ArrayBuffer;
 			if (this.settings.enableCompression) {
 				progressNotice.setMessage('正在压缩图片...');
 				const options = {
@@ -343,18 +397,40 @@ export default class AliyunOssUploader extends Plugin {
 				const compressedBlob = await imageCompression(blob, options);
 				fileContent = await compressedBlob.arrayBuffer();
 			} else {
-				fileContent = await blob.arrayBuffer();
+				fileContent = originalContent;
 			}
 
 			progressNotice.setMessage('正在上传...');
-			const imageUrl = await this.ossService.uploadFile(fileContent, blob.name);
+			const contentType = `image/${fileExt}`;
+			const { authorization, endpoint } = await this.ossService.generateSignature(ossPath, contentType);
+
+			await this.ossService.retryOperation(async () => {
+				const response = await requestUrl({
+					url: endpoint,
+					method: 'PUT',
+					headers: {
+						'Authorization': authorization,
+						'Date': new Date().toUTCString(),
+						'Content-Type': contentType,
+					},
+					body: fileContent,
+				});
+
+				if (response.status !== 200) {
+					throw new Error(`上传失败: HTTP ${response.status}`);
+				}
+			});
+
+			const baseUrl = this.settings.customDomain || `https://${this.settings.bucket}.${this.settings.region}.aliyuncs.com`;
+			const imageUrl = `${baseUrl}/${ossPath}`;
 
 			// 获取当前编辑器
 			const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
 			if (activeView) {
 				const editor = activeView.editor;
 				const cursor = editor.getCursor();
-				editor.replaceRange(`![](${imageUrl})`, cursor);
+				const baseFileName = blob.name.replace(/\.[^/.]+$/, "");
+				editor.replaceRange(`![${baseFileName}](${imageUrl})\n`, cursor);
 			}
 
 			progressNotice.hide();
