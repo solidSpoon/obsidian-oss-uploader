@@ -285,6 +285,7 @@ export default class AliyunOssUploader extends Plugin {
 
 		const editor = activeView.editor;
 		const file = activeView.file;
+		if (!file) return;
 		const baseFileName = fileName.replace(/\.[^/.]+$/, "");
 
 		// 使用 MetadataCache 获取所有嵌入图片的位置
@@ -393,13 +394,15 @@ class AliyunOssSettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName('Access Key Secret')
 			.setDesc('阿里云账号的 Access Key Secret')
-			.addText(text => text
-				.setPlaceholder('输入 Access Key Secret')
-				.setValue(this.plugin.settings.accessKeySecret)
-				.onChange(async (value) => {
+			.addText(text => {
+				text.setPlaceholder('输入 Access Key Secret')
+					.setValue(this.plugin.settings.accessKeySecret);
+				text.inputEl.type = 'password';
+				text.onChange(async (value) => {
 					this.plugin.settings.accessKeySecret = value;
 					await this.plugin.saveSettings();
-				}));
+				});
+			});
 
 		new Setting(containerEl)
 			.setName('Bucket')
